@@ -9132,6 +9132,11 @@ the writer. `order` records a cross-queue wait, a shared wait, same-queue
 ordering or an omitted wait in a control. A `recorded` call reaches a
 desktop command list. A `forwarded` submission reaches the desktop queue.
 
+The paired trace fixture runs on WARP and hardware. An additional WARP
+control leaves the selector unset, supplies a nondecimal suffix, and supplies
+a value that would truncate to the ordered call's ordinal. Each control must
+pass the paired pixel readback without emitting any trace rows.
+
 The recent-copy rows search the last 1,024 submitted copy destinations
 recorded by the XMem lease tracker. These cover forwarded slot 15 and slot 17
 copies into eligible copied placements. A placement overlap is a candidate
@@ -15045,6 +15050,12 @@ that names one value (a pointer only if no add touched it), is read at run time 
 read before its next write when a path brings a symbol with no run-time value or no definition at all. `startup_gfx2hlsl_join_symbols_check.py` pins the cases; the
 `join_symbols_folded_*` tests run the old OUTSIDE statement and must give 3, not 11. Controls are pure Python plus
 a pixel dispatch on WARP and hardware; `binary` reassembles the fixture words with LLVM 15.
+One read of such a register is accepted in vertex and pixel stages: `s_and_b64 D, S, exec` (either order) or
+`s_orn2_b64 D, S, exec` as the instruction at a target that only forward `s_cbranch_execz` branches and a
+fall-through enter, when the fall-through wrote S as a plain run-time number. On a skipping edge the lane's exec bit
+is 0, so bit 0 of the result is 0 (1 for `s_orn2_b64`) whatever S holds. This relies on the one-lane model, in which
+a lane whose exec bit is 0 takes the branch; it is pure Python only, not run on a GPU, and its words are built from
+the field layouts rather than assembled.
 
 ## Startup translator: a short operand list is refused, never a translator crash
 

@@ -1501,6 +1501,16 @@ foreach(backend IN ITEMS warp hardware)
         ENVIRONMENT "X2W_D3D12_PERMISSIVE=1;X2W_D3D12_LIST_NOOP=1;X2W_D3D12_RENDER=1;X2W_D3D12_DEBUG=1")
 endforeach()
 
+# Resource slot 10: GetDesc on console resource wrappers.
+add_executable(startup_resource_desc tests/startup_resource_desc.cpp)
+target_compile_features(startup_resource_desc PRIVATE cxx_std_17)
+target_link_libraries(startup_resource_desc PRIVATE d3d12_xs_shim d3d12 dxgi)
+foreach(backend IN ITEMS warp hardware)
+    add_test(NAME startup_resource_desc_${backend} COMMAND startup_resource_desc ${backend})
+    set_tests_properties(startup_resource_desc_${backend} PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77
+        ENVIRONMENT "X2W_D3D12_PERMISSIVE=1;X2W_D3D12_LIST_NOOP=1;X2W_D3D12_RENDER=1;X2W_D3D12_DEBUG=1")
+endforeach()
+
 add_executable(startup_nv12_draw tests/startup_nv12_draw.cpp tests/desktop_gpu.cpp)
 target_compile_features(startup_nv12_draw PRIVATE cxx_std_17)
 target_include_directories(startup_nv12_draw PRIVATE src)
@@ -1548,12 +1558,17 @@ if(EXISTS "${INTAKE_PYTHON}")
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/startup_mesh86_srv_proof_check.py"
         "${DXC_EXECUTABLE}" "${CMAKE_CURRENT_BINARY_DIR}")
     set_tests_properties(startup_mesh86_srv_proof PROPERTIES TIMEOUT 60)
-    add_test(NAME startup_indirect_mesh_lease_warp_dual-trace COMMAND "${INTAKE_PYTHON}" -B
+    add_test(NAME startup_indirect_mesh_lease_warp_dual-trace-disabled COMMAND "${INTAKE_PYTHON}" -B
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/startup_indirect_mesh_cache_check.py"
         "${DXC_EXECUTABLE}" "$<TARGET_FILE:startup_indirect_draw_indexed>" warp
-        "$<TARGET_FILE:xmem_shim>" dual-trace)
-    set_tests_properties(startup_indirect_mesh_lease_warp_dual-trace PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+        "$<TARGET_FILE:xmem_shim>" dual-trace-disabled)
+    set_tests_properties(startup_indirect_mesh_lease_warp_dual-trace-disabled PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
     foreach(backend IN ITEMS warp hardware)
+        add_test(NAME startup_indirect_mesh_lease_${backend}_dual-trace COMMAND "${INTAKE_PYTHON}" -B
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/startup_indirect_mesh_cache_check.py"
+            "${DXC_EXECUTABLE}" "$<TARGET_FILE:startup_indirect_draw_indexed>" ${backend}
+            "$<TARGET_FILE:xmem_shim>" dual-trace)
+        set_tests_properties(startup_indirect_mesh_lease_${backend}_dual-trace PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
         add_test(NAME startup_indirect_mesh_cache_${backend} COMMAND "${INTAKE_PYTHON}" -B
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/startup_indirect_mesh_cache_check.py"
             "${DXC_EXECUTABLE}" "$<TARGET_FILE:startup_indirect_draw_indexed>" ${backend})
@@ -3112,6 +3127,12 @@ if(EXISTS "${INTAKE_PYTHON}")
     # s_pack_ll_b32_b16, s_pack_lh_b32_b16 and s_absdiff_i32 against an integer reference (#1723).
     add_test(NAME startup_gfx2hlsl_pack_absdiff COMMAND "${INTAKE_PYTHON}" -B
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/startup_gfx2hlsl_pack_absdiff_check.py")
+    foreach(adapter IN ITEMS warp hardware)
+        add_test(NAME startup_gfx2hlsl_pack_absdiff_dispatch_${adapter} COMMAND "${INTAKE_PYTHON}" -B
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/startup_gfx2hlsl_pack_absdiff_check.py" dispatch "${DXC_EXECUTABLE}"
+            "$<TARGET_FILE:offscreen_check>" ${adapter})
+        set_tests_properties(startup_gfx2hlsl_pack_absdiff_dispatch_${adapter} PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+    endforeach()
     # gfx2hlsl run-time sampler heap indexing (#1143): translation controls, then a desktop draw with
     # DXC ps_6_0 and, when the Windows SDK's FXC is found, the ps_5_1 the startup tools compile with.
     find_program(STARTUP_FXC fxc HINTS "${DXC_BIN_DIR}")
@@ -5634,6 +5655,8 @@ if(EXISTS "${INTAKE_PYTHON}")
     add_test(NAME xmem_attribute_scan COMMAND "${INTAKE_PYTHON}" -B
         "${CMAKE_SOURCE_DIR}/tests/xmem_attribute_scan_check.py" "$<TARGET_FILE:cpu_xmem_attributes>"
         "$<TARGET_FILE:cpu_xmem_delay>")
+    add_test(NAME xmem_attribute_scan_cli_check COMMAND "${INTAKE_PYTHON}" -B
+        "${CMAKE_SOURCE_DIR}/tests/xmem_attribute_scan_cli_check.py")
 
     # VEX.128 16-bit packed-integer leaf functions, an arithmetic-shift control, and their C++.
     foreach(variant IN ITEMS original altered)

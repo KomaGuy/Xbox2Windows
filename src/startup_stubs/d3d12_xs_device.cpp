@@ -3733,7 +3733,15 @@ void* __stdcall resource_get_desc(void* a, void* b)
 {
     void* result = nullptr;
     Wrapper* self = receiver(a, b, &result, "Resource::GetDesc(no receiver)");
+    if (!self || !self->own().real || !result) return result;
     *static_cast<D3D12_RESOURCE_DESC*>(result) = static_cast<ID3D12Resource*>(self->own().real)->GetDesc();
+    static LONG logged;
+    if (first_calls(logged, 4)) {
+        const auto& d = *static_cast<const D3D12_RESOURCE_DESC*>(result);
+        log("x2w-d3d12 Resource::GetDesc res=%p dim=%d fmt=%d size=%llux%ux%u mips=%u layout=0x%x flags=0x%x",
+            static_cast<void*>(self), d.Dimension, d.Format, static_cast<unsigned long long>(d.Width),
+            d.Height, d.DepthOrArraySize, d.MipLevels, d.Layout, d.Flags);
+    }
     return result;
 }
 
@@ -5626,10 +5634,10 @@ void build_tables()
     // Resource: Map, Unmap, GetDesc, GetGPUVirtualAddress, Write/ReadFromSubresource, GetHeapProperties.
     tables[resource_kind][8] = reinterpret_cast<void*>(&resource_map);
     tables[resource_kind][9] = reinterpret_cast<void*>(&resource_unmap);
+    tables[resource_kind][10] = reinterpret_cast<void*>(&resource_get_desc);
     tables[resource_kind][11] = reinterpret_cast<void*>(&resource_gpu_address);
-    // Desktop Resource 10 (GetDesc), 12-14, Heap 8 and DescriptorHeap 8 (GetDesc, struct returns) are
+    // Desktop Resource 12-14, Heap 8 and DescriptorHeap 8 (GetDesc, struct returns) are
     // not installed until a call site confirms them: the queue's slot 18 showed what a wrong one does.
-    (void)&resource_get_desc;
     (void)&heap_get_desc;
     (void)&descriptor_heap_get_desc;
     tables[descriptor_heap_kind][9] = reinterpret_cast<void*>(&descriptor_heap_cpu_start);
