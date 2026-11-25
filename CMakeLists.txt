@@ -2983,6 +2983,8 @@ if(EXISTS "${INTAKE_PYTHON}")
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/startup_image_gather_lz_check.py")
     add_test(NAME startup_compute_gather_lz COMMAND "${INTAKE_PYTHON}" -B
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/startup_compute_gather_lz_check.py")
+    add_test(NAME startup_compute_image_store COMMAND "${INTAKE_PYTHON}" -B
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/startup_compute_image_store_check.py")
     add_test(NAME startup_compute_image_store_d16 COMMAND "${INTAKE_PYTHON}" -B
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/startup_compute_image_store_d16_check.py")
     add_test(NAME startup_compute_readfirstlane COMMAND "${INTAKE_PYTHON}" -B
@@ -3041,6 +3043,9 @@ if(EXISTS "${INTAKE_PYTHON}")
     # gfx2hlsl lowers s_bitcmp1_b32 and s_bitcmp0_b32 (SOPC): CPU evaluation of the translated SCC test.
     add_test(NAME startup_gfx2hlsl_s_bitcmp COMMAND "${INTAKE_PYTHON}" -B
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/startup_gfx2hlsl_s_bitcmp_check.py")
+    # gfx2hlsl lowers v_cube{id,sc,tc,ma}_f32: device-free translation controls.
+    add_test(NAME startup_gfx2hlsl_cube_controls COMMAND "${INTAKE_PYTHON}" -B
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/startup_gfx2hlsl_cube_check.py")
     # gfx2hlsl.py --watch consumes only ready requests and does not retry an unchanged failure.
     add_test(NAME startup_gfx2hlsl_watch COMMAND "${INTAKE_PYTHON}" -B
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/startup_gfx2hlsl_watch_check.py")
@@ -3385,6 +3390,14 @@ if(EXISTS "${INTAKE_PYTHON}")
             "${CMAKE_SOURCE_DIR}/tests/startup_gfx2hlsl_bit_alu_check.py" draw "${DXC_EXECUTABLE}"
             "$<TARGET_FILE:offscreen_check>" ${adapter} $<$<BOOL:${STARTUP_FXC}>:${STARTUP_FXC}>)
         set_tests_properties(startup_gfx2hlsl_bit_alu_${adapter} PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
+    endforeach()
+    # gfx2hlsl v_cube{id,sc,tc,ma}_f32: the source-built cube directions are drawn and compared with the
+    # LLVM ConstantFoldAMDGCNCubeIntrinsic model; swapped id/sc, tie-order and cubema-factor controls must fail.
+    foreach(adapter IN ITEMS warp hardware)
+        add_test(NAME startup_gfx2hlsl_cube_${adapter} COMMAND "${INTAKE_PYTHON}" -B
+            "${CMAKE_SOURCE_DIR}/tests/startup_gfx2hlsl_cube_check.py" draw "${DXC_EXECUTABLE}"
+            "$<TARGET_FILE:offscreen_check>" ${adapter} $<$<BOOL:${STARTUP_FXC}>:${STARTUP_FXC}>)
+        set_tests_properties(startup_gfx2hlsl_cube_${adapter} PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77)
     endforeach()
     # gfx2hlsl v_interp_p1ll_f16 / v_interp_p2_f16 (#1996): translation controls with a high-half inversion
     # control, then a desktop draw of the translated pair with DXC 6_0.
@@ -7297,6 +7310,25 @@ if(EXISTS "${INTAKE_PYTHON}")
     add_test(NAME cpu_aot_x87_trig COMMAND "${INTAKE_PYTHON}" -B "${CMAKE_SOURCE_DIR}/tests/cpu/x87_trig.py"
         check "$<TARGET_FILE:cpu_x87_harness>" "$<TARGET_FILE:cpu_x87_trig>"
         "$<TARGET_FILE:cpu_x87_trig_lifted>" ${x87_trig_control_files})
+    set(cpu_x87_exp_log_aot_exports
+        "op_f2xm1_m80,op_f2xm1_m64,op_f2xm1_m32,op_f2xm1_fst_m64,op_f2xm1_fst_m32,op_f2xm1_sw,"
+        "op_fyl2x_m80,op_fyl2x_m64,op_fyl2x_m32,op_fyl2x_sw,op_fyl2x_pop_depth,op_fyl2x_depth8,"
+        "op_fyl2xp1_m80,op_fyl2xp1_m64,op_fyl2xp1_m32,op_fyl2xp1_sw,op_fyl2xp1_pop_depth,"
+        "op_exp_log_roundtrip,op_fcw_roundtrip,op_fninit_cw_sw,op_fninit_sw")
+    string(CONCAT cpu_x87_exp_log_aot_exports ${cpu_x87_exp_log_aot_exports})
+    foreach(variant IN ITEMS original altered)
+        cpu_asm_fixture(cpu_x87_exp_log_aot_${variant} x87_exp_log_aot)
+        cpu_translation(cpu_x87_exp_log_aot_${variant} cpu_x87_exp_log_aot "${cpu_x87_exp_log_aot_exports}")
+    endforeach()
+    target_compile_definitions(cpu_x87_exp_log_aot_altered PRIVATE ALTER_X87_EXP_LOG)
+    add_test(NAME cpu_aot_x87_exp_log COMMAND "${INTAKE_PYTHON}" -B
+        "${CMAKE_SOURCE_DIR}/tests/cpu/x87_exp_log_aot_check.py"
+        "$<TARGET_FILE:cpu_x87_exp_log_aot_original>"
+        "$<TARGET_FILE:cpu_x87_exp_log_aot_original_lifted>"
+        "$<TARGET_FILE:cpu_x87_exp_log_aot_altered>"
+        "$<TARGET_FILE:cpu_x87_exp_log_aot_altered_lifted>")
+    set_tests_properties(cpu_aot_x87_exp_log PROPERTIES
+        ENVIRONMENT "FORM_COVERAGE_RECORD=${CMAKE_BINARY_DIR}/form_coverage/cpu_aot_x87_exp_log.txt")
     cpu_asm_fixture(cpu_create create_context)
     set(create_fixture "${CMAKE_CURRENT_BINARY_DIR}/cpu_create_lifted.cpp")
     add_custom_command(OUTPUT "${create_fixture}"
@@ -8464,6 +8496,8 @@ if(EXISTS "${INTAKE_PYTHON}")
         "${CMAKE_SOURCE_DIR}/tests/script_state_check.py")
     add_test(NAME resource_relocated_root COMMAND "${INTAKE_PYTHON}" -B
         "${CMAKE_SOURCE_DIR}/tests/resource_root_check.py")
+    add_test(NAME runtime_resource_root_cli_check COMMAND "${INTAKE_PYTHON}" -B
+        "${CMAKE_SOURCE_DIR}/tests/resource_root_cli_check.py")
     add_test(NAME pe_authentihash COMMAND "${INTAKE_PYTHON}" -B
         "${CMAKE_SOURCE_DIR}/tests/pe_authentihash_check.py")
     add_test(NAME pe_authentihash_oracle COMMAND "${INTAKE_PYTHON}" -B
@@ -8551,6 +8585,8 @@ if(EXISTS "${INTAKE_PYTHON}")
     set_tests_properties(mesh_amplification_refusal PROPERTIES TIMEOUT 30)
     add_test(NAME mesh_entry_aot_cli_check COMMAND "${INTAKE_PYTHON}" -B
         "${CMAKE_SOURCE_DIR}/tests/mesh_entry_aot_cli_check.py")
+    add_test(NAME mesh_bitcmp_clause_cpu COMMAND "${INTAKE_PYTHON}" -B
+        "${CMAKE_SOURCE_DIR}/tests/mesh_bitcmp_clause_check.py")
     foreach(adapter IN ITEMS hardware warp)
         add_test(NAME mesh_dynamic_aot_draw_${adapter} COMMAND "${INTAKE_PYTHON}" -B
             "${CMAKE_SOURCE_DIR}/tests/mesh_dynamic_aot_draw_check.py" "${DXC_EXECUTABLE}"
@@ -9577,6 +9613,10 @@ if(EXISTS "${INTAKE_PYTHON}")
             "${CMAKE_SOURCE_DIR}/tests/startup_compute_gather_lz_check.py" --dispatch "${DXC_EXECUTABLE}"
             "$<TARGET_FILE:offscreen_check>" ${adapter})
         set_tests_properties(startup_compute_gather_lz_${adapter} PROPERTIES TIMEOUT 90 SKIP_RETURN_CODE 77)
+        add_test(NAME startup_compute_image_store_${adapter} COMMAND "${INTAKE_PYTHON}" -B
+            "${CMAKE_SOURCE_DIR}/tests/startup_compute_image_store_check.py" --dispatch "${DXC_EXECUTABLE}"
+            "$<TARGET_FILE:offscreen_check>" ${adapter})
+        set_tests_properties(startup_compute_image_store_${adapter} PROPERTIES TIMEOUT 90 SKIP_RETURN_CODE 77)
         add_test(NAME startup_compute_image_store_d16_${adapter} COMMAND "${INTAKE_PYTHON}" -B
             "${CMAKE_SOURCE_DIR}/tests/startup_compute_image_store_d16_check.py" --dispatch "${DXC_EXECUTABLE}"
             "$<TARGET_FILE:offscreen_check>" ${adapter})
@@ -9784,6 +9824,8 @@ if(EXISTS "${INTAKE_PYTHON}")
         "${CMAKE_SOURCE_DIR}/tests/bidi_controls_check.py")
     add_test(NAME compat_report COMMAND "${INTAKE_PYTHON}" -B
         "${CMAKE_SOURCE_DIR}/tests/compat_report_check.py")
+    add_test(NAME pe_compat_report_cli_check COMMAND "${INTAKE_PYTHON}" -B
+        "${CMAKE_SOURCE_DIR}/tests/compat_report_cli_check.py")
     add_test(NAME form_coverage COMMAND "${INTAKE_PYTHON}" -B
         "${CMAKE_SOURCE_DIR}/tests/form_coverage_check.py")
     add_test(NAME gpu_report_format COMMAND "${INTAKE_PYTHON}" -B

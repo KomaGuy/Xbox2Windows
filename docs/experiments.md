@@ -4071,6 +4071,37 @@ python3 -B tests/mesh_dynamic_aot_check.py
 python3 -B tests/mesh_loop_census_check.py
 ```
 
+## Mesh hard-clause hints and scalar bit-test predicates
+
+[`tools/mesh_entry_aot.py`](../tools/mesh_entry_aot.py) (and [`tools/mesh_dynamic_aot.py`](../tools/mesh_dynamic_aot.py)
+through `Wave`) now lower the SOPP hard-clause hint `s_clause` and the four
+SOPC scalar bit-test instructions `s_bitcmp0_b32`, `s_bitcmp1_b32`,
+`s_bitcmp0_b64` and `s_bitcmp1_b64` (Refs #2413).
+
+`s_clause` accepts integer operands in `0..63` (`0x0..0x3f`) as a scheduling
+no-op in both top-level execution and uniform descriptor join arms, and refuses
+out-of-range or non-integer operands. `s_bitcmp0_b32` / `s_bitcmp1_b32` test
+`((S0.u32 >> (S1.u32 & 31)) & 1) == 0 / 1`; `s_bitcmp0_b64` / `s_bitcmp1_b64`
+test `((S0.u64 >> (S1.u32 & 63)) & 1) == 0 / 1` across 64-bit SGPR pairs,
+`exec`, `vcc`, and sign-extended inline constants. An `UNDEF` operand clears
+`scc` to `None` (refused only if a branch or select reads `scc`), while
+`RuntimeWord` and non-concrete scalar operands raise `ValueError`.
+
+```text
+python3 -B tests/mesh_bitcmp_clause_check.py
+ctest --preset dev --no-tests=error -R "^mesh_bitcmp_clause_cpu$" -V
+```
+
+[`tests/mesh_bitcmp_clause_check.py`](../tests/mesh_bitcmp_clause_check.py)
+builds synthetic gfx1013 machine-code bytes, decodes them solely through
+[`tools/disasm_rdna2.py`](../tools/disasm_rdna2.py) `decode_instruction`, and
+checks both `mesh_entry_aot.lower` and `mesh_dynamic_aot.enumerate_variants`:
+`s_clause` `0x0`/`0x3f` accepted at top level and inside a join arm with `0x40`
+and `0xffff` refused; 32-bit and 64-bit bit tests across bit 0, bit 31, bit 35,
+bit 63, and index wraps (`33 & 31 == 1`, `65 & 63 == 1`) with SGPRs, inline
+constants, `exec`, and `vcc`; and `UNDEF`, `RuntimeWord`, dynamic string/`Select`,
+and undefined-`vcc` refusals. No GPU draw or DXIL compilation was run here.
+
 ## Amplification and mesh pipeline forms
 
 `tests/mesh_amplified_check.py` builds an amplification shader (`as_6_5`) and a
@@ -7428,15 +7459,15 @@ sets the process exit code to 1. The remaining pairs still report a status.
 Run `ctest --preset dev --no-tests=error -R '^pixel_batch_pairs_(hardware|warp)$' -V`
 to compare two shaders with isolated draws and exercise mismatch and missing-file controls.
 
-The 32-bit integer, 16-bit integer and SDWA predicate draws use the same
-runner, one batch per compiled group, with the same references. The
-signed-against-unsigned control of the first `i32` e32 group and the
-inverted-unordered control of each SDWA group run inside their batch as
-expected mismatches, each followed by a passing draw. The three 16-bit
-`must_mismatch` controls, two of them on mutated shaders, keep one single-case
-draw each. These three suites
-go from 108 device creations to 23, and DXC compiles one shader fewer, because
-the signed/unsigned control now reuses the group's compiled shader.
+The 32-bit integer predicate fixture passes eight compiled shaders and 33
+references to one `--check-pixel-pairs` process. The signed-against-unsigned
+reference in the first `i32` e32 group must mismatch, and the following draw
+must pass. Each 16-bit integer or SDWA predicate group uses a single-shader
+batch. Each SDWA inverted-unordered control still precedes a passing draw.
+The three 16-bit `must_mismatch` controls use one single-case draw each.
+The original per-shader batching cut device creations across these three
+suites from 108 to 23 and saved one compile by reusing the signed shader.
+Combining the eight 32-bit groups saves seven more device creations.
 
 The remaining multi-case `--check-pixel-case` loops across `draw-core`,
 `draw-predicate-rounding`, `draw-blend-scalar`, `draw-e64`, `draw-integer-nc`,
@@ -7784,6 +7815,21 @@ The controls also detect an omitted carry or a replacement with the low word.
 Build `offscreen_check`, then run
 `ctest --preset dev --no-tests=error -j 1 -R '^startup_gfx2hlsl_mul_hi_' -V`.
 [Refs #1792](https://github.com/R0Y00/Xbox2Windows/issues/1792)
+
+**Cube coordinate operations.** Startup translation now lowers `v_cubeid_f32`,
+`v_cubesc_f32`, `v_cubetc_f32` and `v_cubema_f32` (VOP3A) with the same
+major-axis rule as LLVM's `ConstantFoldAMDGCNCubeIntrinsic`: z wins when
+`|z| >= |x|` and `|z| >= |y|`, otherwise y wins when `|y| >= |x|`, otherwise
+x. A face is negative only for a nonzero, non-NaN negative coordinate, and
+`v_cubema_f32` returns twice the signed major coordinate. The source-built
+fixture covers all six faces, the y/x and z/x ties, and `-0.0` on the major axis.
+The draw compares all four result words on WARP and hardware; a swapped id/sc,
+a changed tie order and a dropped `* 2.0f` factor must each mismatch. The
+translation controls also cover `clamp`, source neg/abs, a missing operand, a
+vector destination and unsupported modifiers. NaN coordinates are not drawn.
+Build `offscreen_check`, then run
+`ctest --preset dev --no-tests=error -R '^startup_gfx2hlsl_cube' -V`.
+[Refs #1723](https://github.com/R0Y00/Xbox2Windows/issues/1723)
 
 **Scalar bit tests.** Startup translation sets SCC for `s_bitcmp0_b32` and
 `s_bitcmp1_b32` by comparing the selected bit of the first word to zero or
@@ -9247,7 +9293,8 @@ the root in `.root`, the pixel program (or an empty file) in `.ps57`, and
 writes the mesh program last in `.m57`. The offline reader validates the
 request key and stage exports. It translates a mesh program of one
 group-memory shape, with a pixel program, to `.ms57.hlsl` and `.ps57.hlsl`
-and compiles them as `ms_6_5` and `ps_6_0`. In that shape lane 0 of wave 0
+and compiles them as `ms_6_5` and `ps_6_0` (without a pixel program, to
+`.ms57.hlsl` alone; see below). In that shape lane 0 of wave 0
 stores the primitive and vertex counts, every wave passes a barrier, wave 0
 sends one allocation request and the other wave reads the counts back; the
 code around it is straight-line and exports vertex and primitive `thread`
@@ -9270,10 +9317,17 @@ the published bytes and key, compiles the recorded pair with its serialized
 root, and compares all 1,024 desktop readback pixels with the CPU reference.
 The one-pixel negative control uses that same published pair.
 
-The pending scan checks the DXContainer header and file length for both
-slot 57 bytecode artifacts. A missing or truncated artifact leaves the
-request pending even if its manifest exists. In manifest-only mode the
-manifest still completes the request.
+The translator also accepts the same slot 57 mesh shape with an empty
+`req_<key>.ps57`. It emits the mesh stage alone, keeping position and
+primitive exports, and records `ps none` in `<key>.ms57.txt`. A null-export
+depth-only pixel stage is still refused. Run
+`python -B tests/startup_mesh57_skeleton_check.py` for the source and cache
+checks, or run the `startup_mesh57_skeleton` CTest checks below for the DXC mode.
+
+The pending scan checks the DXContainer header and file length for every
+required slot 57 bytecode artifact. A `ps none` result needs the mesh artifact
+only. A missing or truncated required artifact leaves the request pending
+even if its manifest exists. In manifest-only mode the manifest completes it.
 
 Set `X2W_REFUSE_FIXED_MESH=1` to report unavailable fixed mesh pipelines at
 slot 57 creation. The descriptor must name a registered root, have an empty
@@ -13845,6 +13899,8 @@ ctest --preset dev --no-tests=error -R '^startup_gfx2hlsl_cmp16_' -V
 python -B tests/startup_gfx2hlsl_cmp16_check.py binary <llvm-mc> <llvm-objcopy>
 ```
 
+`tools/startup/gfx2hlsl.py` also refuses the NEG bit of a VOP3 source that is a non-negative inline integer (0 to 64) or a literal. The disassembler prints inline 1 with NEG as `-1`, the same text as inline -1, so the text cannot tell the two encodings apart. The exception is the two data operands of `v_cndmask_b32_e64`, which model NEG as a flip of bit 31. The hardware behavior of NEG on integer sources is not measured. Check: `tests/startup_gfx2hlsl_refusals_check.py`.
+
 ## Startup translator: explicit-LOD image sampling
 
 `tools/startup/gfx2hlsl.py` now lowers the gfx1013 `image_sample_l` form of a 2D or 3D texture sample to `tex.SampleLevel(smp, uv, level)`. The level is the last address register: the third for a contiguous 2D address, the fourth for 3D, and the last element of an NSA list. `tests/startup_image_sample_l_check.py` translates source-built fixtures (the words are checked against `llvm-mc`) and requires the level to come from that register; an address list `[v0, v1, v3]` must use `v3`, not the third consecutive register. Replacing the level with 0, replacing the call with implicit `Sample`, or reading the third register in every form each make the check fail. Offset (`_o`), compare (`_c_l`), gather, 1D, array, cube and multisample dimensions, an empty `dmask`, and the `unorm`, `r128`, `tfe`, `lwe`, `a16` and `d16` modifiers or any set reserved MIMG bit are refused with an `Unsupported` message; only the cache-policy bits `glc`, `slc` and `dlc` are accepted because they do not change the sampled value. The disassembler previously read `lwe` from reserved bit 14 of word 0; `llvm-mc` (19, gfx1013) encodes it in bit 17, and the check now has one `llvm-mc`-built fixture per refused modifier plus patched reserved-bit fixtures. Not measured: no draw samples a mip level on WARP or hardware through this lowering, so the level selection is checked on the generated HLSL text only. [HLSL SampleLevel](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/dx-graphics-hlsl-to-samplelevel)
@@ -14053,6 +14109,29 @@ R/G, swapping the packed registers and dropping the EXEC guard produce 64, 32,
 ```powershell
 cmake --build --preset release --target offscreen_check
 ctest --preset release --no-tests=error -R '^startup_compute_image_store_d16' -V
+```
+
+### Startup compute 32-bit float image store
+
+The startup compute translator also accepts a 2D 32-bit `image_store` (with or
+without the integer-coordinate `unorm` modifier) when all four DMASK bits are
+set, coordinates are two full-width VGPRs, data comes from four consecutive
+VGPRs and the eight image descriptor words come from an unmodified fixed table
+offset. The translator emits `asfloat(uint4(...))` into a `RWTexture2D<float4>`
+under the lane's EXEC bit and records `uav N tex2d float table P O channels 4`
+in the version 2 compute manifest. Pixel-stage 2D `image_store` also accepts
+`unorm`.
+
+The standalone dispatch reuses the source and CPU reference from the
+[gfx1013 2D float store fixture](#gfx1013-2d-float-image-stores-and-mip-loads).
+Two groups write 16 texels to mip zero of an `R32G32B32A32_FLOAT` UAV while
+comparing all 1,344 words across three mips. A second program masks out the
+second row. Omitting the store, swapping R/B, swapping RG/BA and dropping the
+EXEC guard produce 64, 32, 64 and 32 mismatches respectively.
+
+```powershell
+cmake --build --preset release --target offscreen_check
+ctest --preset release --no-tests=error -R '^startup_compute_image_store(_warp|_hardware)?$' -V
 ```
 
 ### Explicit-LOD 2D gather
