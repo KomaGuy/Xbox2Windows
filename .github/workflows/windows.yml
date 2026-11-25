@@ -41,6 +41,7 @@ jobs:
           SPIRV = ["spirv-as", "spirv-val", "spirv-cross"]
           CHECKS = [
               (["tests/compute_store_check.py", *COMMON_LLVM], {}),
+              (["tests/compute_buffer_atomics_check.py", "--binary", "llvm-mc-15", "llvm-objcopy-15", "--llvm", "libLLVM-15.so.1"], {}),
               (["tests/compute_load_format_check.py", *COMMON_LLVM], {}),
               (["tests/compute_heap_view_check.py", *COMMON_LLVM], {}),
               (["tests/compute_heap_store_check.py", *COMMON_LLVM], {}),
@@ -307,6 +308,7 @@ jobs:
             tests/startup_stream_interface_check.py \
             tests/compute_alu_cmp_ne_check.py \
             tests/compute_entry_layout_check.py \
+            tests/compute_buffer_atomics_check.py \
             tests/compute_alu_bcnt64_check.py \
             tests/compute_load_format_check.py \
             tests/compute_heap_view_check.py \
