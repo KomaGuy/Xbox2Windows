@@ -15517,3 +15517,20 @@ ctest --preset dev --no-tests=error -R '^(pixel_aot_sdwa_int_extra_warp|pixel_ao
 ```
 
 Linux controls, `form_coverage_check.check_sdwa_int_extra_forms`, and Python reference/mutation checks ran locally; LLVM 15 `pixel_aot_binary` round-trips and Windows WARP/hardware D3D12 draws run in CI.
+
+## Exact binary16 min, max, fract, and frexp forms (VOP1/VOP2/VOP3/DPP16/DPP8/SDWA) in pixel_aot
+
+[The pixel shader translator](../tools/pixel_aot.py) adds 25 exact binary16 forms across all 5 encodings (counted in both `docs/coverage/gfx1013.tsv` and `docs/coverage/rdna2.tsv`):
+
+- `v_min_f16`, `v_max_f16` (`VOP2`, `VOP3` `_e64`, `DPP16`, `DPP8`, `SDWA` — 10 forms)
+- `v_fract_f16` (`VOP1`, `VOP3` `_e64`, `DPP16`, `DPP8`, `SDWA` — 5 forms)
+- `v_frexp_mant_f16`, `v_frexp_exp_i16_f16` (`VOP1`, `VOP3` `_e64`, `DPP16`, `DPP8`, `SDWA` — 10 forms)
+
+All 25 require explicit `half_denorm="preserve"`, refuse `HALF_RTZ`, and enforce the static finite-proof contract. `v_min_f16`/`v_max_f16` compare finite 16-bit bit patterns directly in integer order (`f16_min_bits`/`f16_max_bits`) and refuse opposite-signed zeros (`+0.0` vs `-0.0`). `v_fract_f16` lowers `widen16(x) - floor(widen16(x))` through `narrow16` and refuses tiny negative inputs (`-2^-11 < x < 0`, `0x8001..0x93ff`) where `1 + x` is not representable on the binary16 grid. `v_frexp_mant_f16` (`("half16", alu)`) and `v_frexp_exp_i16_f16` (`("low16", alu)`) decompose finite binary16 operands in pure 16-bit integer arithmetic (`frexp_mant_f16`/`frexp_exp_i16_f16`), preserving subnormals under `-denorm ftz`.
+
+```powershell
+python3 tests/pixel_aot_check.py
+ctest --preset dev --no-tests=error -R '^(pixel_aot_f16_exact_extra_warp|pixel_aot_f16_exact_extra_hardware|pixel_aot_binary)$' -V
+```
+
+Linux controls, `form_coverage_check.check_f16_exact_extra_forms`, and Python reference/mutation checks ran locally; LLVM 15 `pixel_aot_binary` round-trips and Windows WARP/hardware D3D12 draws run in CI.

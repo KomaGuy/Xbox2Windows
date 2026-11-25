@@ -9300,6 +9300,11 @@ if(EXISTS "${INTAKE_PYTHON}")
             "$<TARGET_FILE:offscreen_check>" ${adapter})
         set_tests_properties(pixel_aot_sdwa_int_extra_${adapter} PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77
             ENVIRONMENT "FORM_COVERAGE_RECORD=${CMAKE_BINARY_DIR}/form_coverage/pixel_aot_sdwa_int_extra_${adapter}.txt")
+        add_test(NAME pixel_aot_f16_exact_extra_${adapter} COMMAND "${INTAKE_PYTHON}" -B
+            "${CMAKE_SOURCE_DIR}/tests/pixel_aot_check.py" draw-f16-exact-extra "${DXC_EXECUTABLE}"
+            "$<TARGET_FILE:offscreen_check>" ${adapter})
+        set_tests_properties(pixel_aot_f16_exact_extra_${adapter} PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77
+            ENVIRONMENT "FORM_COVERAGE_RECORD=${CMAKE_BINARY_DIR}/form_coverage/pixel_aot_f16_exact_extra_${adapter}.txt")
         add_test(NAME pixel_aot_dpp_extra_${adapter} COMMAND "${INTAKE_PYTHON}" -B
             "${CMAKE_SOURCE_DIR}/tests/pixel_aot_check.py" draw-dpp-extra "${DXC_EXECUTABLE}"
             "$<TARGET_FILE:offscreen_check>" ${adapter})
