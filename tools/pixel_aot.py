@@ -5392,6 +5392,8 @@ def lower(instructions, texture_sgpr, interp_sgpr, sampler, constant_descriptor=
                 raise ValueError("UNUSED_SEXT is not lowered")
             if mask != "entry" or not 0 <= int(dst[1:]) <= 255 or dst in sample_dest or carry_out_tok != carry_in_tok:
                 raise ValueError("Invalid carry-in operation")
+            if src0.startswith("s") and src1.startswith("s") and src0 != src1:
+                raise ValueError("SDWA carry-in reads at most one distinct SGPR source")
             condition = scalar.get("vcc")
             if ("vcc" in pending or not isinstance(condition, tuple)
                     or condition[0] != "condition" or condition[2:] != (0, 1)):

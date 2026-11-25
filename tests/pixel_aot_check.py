@@ -11133,16 +11133,18 @@ SDWA_INT_EXTRA_PROGRAMS = {
     ],
     "co_ci": [
         "v_mov_b32_e32 v18, s45",
+        "v_mov_b32_e32 v19, s46",
+        "v_mov_b32_e32 v20, s47",
         "v_mov_b32_e32 v14, 0x00001337",
         "v_cmp_lt_u32_e32 vcc_lo, s44, v18",
-        # ch0: sext(BYTE_0(s44)) + WORD_0(s46) + ci0 -> v12, updates vcc_lo with 32-bit carry-out.
-        "v_add_co_ci_u32_sdwa v12, vcc_lo, sext(s44), s46, vcc_lo dst_sel:DWORD dst_unused:UNUSED_PAD src0_sel:BYTE_0 src1_sel:WORD_0",
+        # ch0: sext(BYTE_0(s44)) + WORD_0(v19) + ci0 -> v12, updates vcc_lo with 32-bit carry-out.
+        "v_add_co_ci_u32_sdwa v12, vcc_lo, sext(s44), v19, vcc_lo dst_sel:DWORD dst_unused:UNUSED_PAD src0_sel:BYTE_0 src1_sel:WORD_0",
         # ch1: WORD_1(s47) - WORD_1(v18) - borrow_in -> WORD_0 of v13, updates vcc_lo with 32-bit borrow-out.
         "v_sub_co_ci_u32_sdwa v13, vcc_lo, s47, v18, vcc_lo dst_sel:WORD_0 dst_unused:UNUSED_PAD src0_sel:WORD_1 src1_sel:WORD_1",
-        # ch2: BYTE_0(s47) - sext(BYTE_1(s44)) - borrow_in -> WORD_1 of v14 keeping 0x1337, updates vcc_lo.
-        "v_subrev_co_ci_u32_sdwa v14, vcc_lo, sext(s44), s47, vcc_lo dst_sel:WORD_1 dst_unused:UNUSED_PRESERVE src0_sel:BYTE_1 src1_sel:BYTE_0",
+        # ch2: BYTE_0(v20) - sext(BYTE_1(s44)) - borrow_in -> WORD_1 of v14 keeping 0x1337, updates vcc_lo.
+        "v_subrev_co_ci_u32_sdwa v14, vcc_lo, sext(s44), v20, vcc_lo dst_sel:WORD_1 dst_unused:UNUSED_PRESERVE src0_sel:BYTE_1 src1_sel:BYTE_0",
         # ch3: final borrow-out flag (0 or 1).
-        "v_cndmask_b32_e32 v15, 0, 1, vcc_lo",
+        "v_cndmask_b32_e64 v15, 0, 1, vcc_lo",
     ],
 }
 SDWA_INT_EXTRA_ROWS = {
@@ -11183,14 +11185,14 @@ SDWA_INT_EXTRA_MUTATIONS = {
          "v_mul_hi_i32_i24_sdwa v15, s46, sext(s47) dst_sel:WORD_1 dst_unused:UNUSED_PAD"),
     ),
     "co_ci": (
-        ("v_add_co_ci_u32_sdwa v12, vcc_lo, sext(s44), s46, vcc_lo",
-         "v_sub_co_ci_u32_sdwa v12, vcc_lo, sext(s44), s46, vcc_lo"),
+        ("v_add_co_ci_u32_sdwa v12, vcc_lo, sext(s44), v19, vcc_lo",
+         "v_sub_co_ci_u32_sdwa v12, vcc_lo, sext(s44), v19, vcc_lo"),
         ("v_sub_co_ci_u32_sdwa v13, vcc_lo, s47, v18, vcc_lo",
          "v_subrev_co_ci_u32_sdwa v13, vcc_lo, s47, v18, vcc_lo"),
-        ("v_subrev_co_ci_u32_sdwa v14, vcc_lo, sext(s44), s47, vcc_lo dst_sel:WORD_1 dst_unused:UNUSED_PRESERVE",
-         "v_sub_co_ci_u32_sdwa v14, vcc_lo, sext(s44), s47, vcc_lo dst_sel:WORD_1 dst_unused:UNUSED_PRESERVE"),
-        ("v_subrev_co_ci_u32_sdwa v14, vcc_lo, sext(s44), s47, vcc_lo dst_sel:WORD_1 dst_unused:UNUSED_PRESERVE",
-         "v_subrev_co_ci_u32_sdwa v14, vcc_lo, sext(s44), s47, vcc_lo dst_sel:WORD_1 dst_unused:UNUSED_PAD"),
+        ("v_subrev_co_ci_u32_sdwa v14, vcc_lo, sext(s44), v20, vcc_lo dst_sel:WORD_1 dst_unused:UNUSED_PRESERVE",
+         "v_sub_co_ci_u32_sdwa v14, vcc_lo, sext(s44), v20, vcc_lo dst_sel:WORD_1 dst_unused:UNUSED_PRESERVE"),
+        ("v_subrev_co_ci_u32_sdwa v14, vcc_lo, sext(s44), v20, vcc_lo dst_sel:WORD_1 dst_unused:UNUSED_PRESERVE",
+         "v_subrev_co_ci_u32_sdwa v14, vcc_lo, sext(s44), v20, vcc_lo dst_sel:WORD_1 dst_unused:UNUSED_PAD"),
     ),
 }
 
@@ -11276,7 +11278,9 @@ def check_sdwa_int_extra_controls():
         (["v_mov_b32_e32 v18, s45"], f"v_mul_u32_u24_sdwa v256, s44, v18 {sdwa2}", "Invalid integer operation"),
         (["v_mov_b32_e32 v18, s45"], f"v_add_co_ci_u32_sdwa v12, vcc_lo, s44, v18, vcc_lo {sdwa2}",
          "Carry mask is not a tracked condition"),
-        (cmp_vcc, f"v_add_co_ci_u32_sdwa v12, vcc_lo, s44, v18, vcc {sdwa2}", "Invalid carry-in operation"),
+        (cmp_vcc, f"v_add_co_ci_u32_sdwa v12, vcc_lo, v18, v18, vcc {sdwa2}", "Invalid carry-in operation"),
+        (cmp_vcc, f"v_add_co_ci_u32_sdwa v12, vcc_lo, s44, s46, vcc_lo {sdwa2}",
+         "SDWA carry-in reads at most one distinct SGPR source"),
         (cmp_vcc, f"v_sub_co_ci_u32_sdwa v12, s52, s44, v18, s52 {sdwa2}", "Unsupported SDWA carry-in operands"),
         (cmp_vcc, "v_subrev_co_ci_u32_sdwa v12, vcc_lo, s44, v18, vcc_lo dst_sel:WORD_0 dst_unused:UNUSED_SEXT src0_sel:DWORD src1_sel:DWORD",
          "UNUSED_SEXT is not lowered"),
