@@ -15495,3 +15495,20 @@ ctest --preset dev --no-tests=error -R '^(pixel_aot_sdwa_int_extra_warp|pixel_ao
 ```
 
 Linux controls, `form_coverage_check.check_sdwa_int_extra_forms`, and Python reference/mutation checks ran locally; LLVM 15 `pixel_aot_binary` round-trips and Windows WARP/hardware D3D12 draws run in CI.
+
+## Binary32 conversion, frexp_exp, and packed-RTZ SDWA forms in pixel_aot
+
+[The pixel shader translator](../tools/pixel_aot.py) adds 13 `SDWA` forms (counted in both `docs/coverage/gfx1013.tsv` and `docs/coverage/rdna2.tsv`):
+
+- Binary32 to int32 & exponent (5): `v_cvt_i32_f32_sdwa`, `v_cvt_u32_f32_sdwa`, `v_cvt_flr_i32_f32_sdwa`, `v_cvt_rpi_i32_f32_sdwa`, `v_frexp_exp_i32_f32_sdwa`
+- Integer / byte / nibble to binary32 (7): `v_cvt_f32_i32_sdwa`, `v_cvt_f32_u32_sdwa`, `v_cvt_f32_ubyte0_sdwa`, `v_cvt_f32_ubyte1_sdwa`, `v_cvt_f32_ubyte2_sdwa`, `v_cvt_f32_ubyte3_sdwa`, `v_cvt_off_f32_i4_sdwa`
+- Packed RTZ export conversion (1): `v_cvt_pkrtz_f16_f32_sdwa`
+
+Float-source forms (`f32->int32`, `frexp_exp`, and `pkrtz`) require whole-dword register sources (`src0_sel:DWORD`, plus `src1_sel:DWORD` and `dst_sel:DWORD` for `pkrtz`) with optional bit-31 `abs`/`neg` modifiers and refuse `sext()`. Integer-source forms (`int->f32`) accept VGPR/SGPR sources with `BYTE_0..3`, `WORD_0..1`, or `DWORD` selection, optional `sext()`, and optional `clamp`, refusing float modifiers. All 13 refuse `UNUSED_SEXT` and `omod`.
+
+```powershell
+python3 tests/pixel_aot_check.py
+ctest --preset dev --no-tests=error -R '^(pixel_aot_sdwa_cvt_warp|pixel_aot_sdwa_cvt_hardware|pixel_aot_binary)$' -V
+```
+
+Linux controls, `form_coverage_check.check_sdwa_cvt_forms`, and Python reference/mutation checks ran locally; LLVM 15 `pixel_aot_binary` round-trips and Windows WARP/hardware D3D12 draws run in CI.

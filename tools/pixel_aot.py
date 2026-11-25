@@ -3029,6 +3029,24 @@ SDWA_CO_CI_OPERANDS = re.compile(
     r" dst_sel:(BYTE_[0-3]|WORD_[01]|DWORD)"
     r" dst_unused:(UNUSED_PAD|UNUSED_SEXT|UNUSED_PRESERVE)"
     r" src0_sel:(BYTE_[0-3]|WORD_[01]|DWORD) src1_sel:(BYTE_[0-3]|WORD_[01]|DWORD)")
+# SDWA binary32-to-int32 conversions and frexp_exp (float src0 with src0_sel:DWORD -> int32 result).
+SDWA_CVT_F32_TO_INT = {
+    "cvt_i32_f32": "cvt_i32_f32",
+    "cvt_u32_f32": "cvt_u32_f32",
+    "cvt_flr_i32_f32": "cvt_flr_i32_f32",
+    "cvt_rpi_i32_f32": "cvt_rpi_i32_f32",
+    "frexp_exp_i32_f32": "dpp_frexp_exp_i32_f32",
+}
+# SDWA integer-to-binary32 conversions (integer src0 with optional sext() and any src0_sel, optional clamp).
+SDWA_CVT_INT_TO_F32 = {
+    "cvt_f32_i32": "float(asint({0}))",
+    "cvt_f32_u32": "float({0})",
+    "cvt_f32_ubyte0": "float(({0} >> 0u) & 0xffu)",
+    "cvt_f32_ubyte1": "float(({0} >> 8u) & 0xffu)",
+    "cvt_f32_ubyte2": "float(({0} >> 16u) & 0xffu)",
+    "cvt_f32_ubyte3": "float(({0} >> 24u) & 0xffu)",
+    "cvt_off_f32_i4": "(float(asint({0} << 28u) >> 28) * 0.0625f)",
+}
 SDWA_F16_SRC = re.compile(r"(-?)(?:abs\(([vs]\d+)\)|\|([vs]\d+)\||([vs]\d+))")
 SDWA_F16_UNARY_OPERANDS = re.compile(
     r"(v\d+), ([^,\s]+) dst_sel:(BYTE_[0-3]|WORD_[01]|DWORD)"
@@ -5439,6 +5457,101 @@ def lower(instructions, texture_sgpr, interp_sgpr, sampler, constant_descriptor=
             lines.append(f"    precise float alu{i} = asfloat({placed});")
             scalar["vcc"] = ("condition", f"cmp{i}", 0, 1)
             vector[dst] = f"alu{i}"
+        elif m := match(rf"v_({'|'.join(SDWA_CVT_F32_TO_INT)})_sdwa (v\d+), ([^,\s]+) dst_sel:(BYTE_[0-3]|WORD_[01]|DWORD) dst_unused:(UNUSED_PAD|UNUSED_SEXT|UNUSED_PRESERVE) src0_sel:(BYTE_[0-3]|WORD_[01]|DWORD)"):
+            # SDWA binary32-to-int32 conversions and frexp_exp: whole-dword float register source with
+            # optional bit-31 abs/neg modifiers, reusing the e64/DPP IEEE-754 bit helpers and SDWA dest placement.
+            op, dst, src0, dst_sel, unused, sel0 = m.groups()
+            if mask != "entry" or not 0 <= int(dst[1:]) <= 255:
+                raise ValueError("Invalid conversion SDWA operation")
+            if dst in sample_dest:
+                raise ValueError("Write overlaps an outstanding sample")
+            if unused == "UNUSED_SEXT":
+                raise ValueError("UNUSED_SEXT is not lowered")
+            if sel0 != "DWORD":
+                raise ValueError(f"v_{op}_sdwa requires src0_sel:DWORD, got {sel0}")
+            if src0.startswith("sext("):
+                raise ValueError(f"Unsupported float SDWA source modifier: {src0}")
+            sm = SDWA_F16_SRC.fullmatch(src0)
+            if not sm:
+                raise ValueError(f"Unsupported float SDWA operand: {src0}")
+            neg, abs_fn, abs_bars, plain = sm.groups()
+            reg = abs_fn or abs_bars or plain
+            if not 0 <= int(reg[1:]) <= (255 if reg[0] == "v" else 105):
+                raise ValueError(f"Register out of range: {reg}")
+            val = fp_operand(reg, scalar, vector, pending, sample_dest)
+            bits = f"asuint({val})"
+            if abs_fn or abs_bars:
+                bits = f"({bits} & 0x7fffffffu)"
+            if neg:
+                bits = f"({bits} ^ 0x80000000u)"
+            helper = SDWA_CVT_F32_TO_INT[op]
+            helpers.add(helper)
+            placed = sdwa_dest(f"{helper}({bits})", dst_sel, unused, vector.get(dst))
+            vector[dst] = f"alu{i}"
+            lines.append(f"    precise float alu{i} = asfloat({placed});")
+        elif m := match(rf"v_({'|'.join(SDWA_CVT_INT_TO_F32)})_sdwa (v\d+), ([^,\s]+)( clamp)? dst_sel:(BYTE_[0-3]|WORD_[01]|DWORD) dst_unused:(UNUSED_PAD|UNUSED_SEXT|UNUSED_PRESERVE) src0_sel:(BYTE_[0-3]|WORD_[01]|DWORD)"):
+            # SDWA integer-to-binary32 conversions (i32, u32, ubyte0..3, off_i4): integer register source
+            # with optional sext() and any SDWA selection, optional clamp, and SDWA destination placement.
+            op, dst, src0, clamp, dst_sel, unused, sel0 = m.groups()
+            if mask != "entry" or not 0 <= int(dst[1:]) <= 255:
+                raise ValueError("Invalid conversion SDWA operation")
+            if dst in sample_dest:
+                raise ValueError("Write overlaps an outstanding sample")
+            if unused == "UNUSED_SEXT":
+                raise ValueError("UNUSED_SEXT is not lowered")
+            if src0.startswith(("-", "|", "abs(")):
+                raise ValueError(f"Source modifiers are not allowed on {src0}")
+            sm = re.fullmatch(SDWA_INT_SOURCE, src0)
+            if not sm or bool(sm.group(1)) != bool(sm.group(3)):
+                raise ValueError(f"Unsupported SDWA integer operand: {src0}")
+            is_sext, reg = bool(sm.group(1)), sm.group(2)
+            if not 0 <= int(reg[1:]) <= (255 if reg[0] == "v" else 105):
+                raise ValueError(f"Register out of range: {reg}")
+            selected = sdwa_source(int_operand(reg, scalar, vector, pending, sample_dest, signed=False), sel0, is_sext)
+            lines.append(f"    uint sc{i} = {selected};")
+            expr = SDWA_CVT_INT_TO_F32[op].format(f"sc{i}")
+            if clamp:
+                expr = f"saturate({expr})"
+            if dst_sel != "DWORD":
+                expr = f"asfloat({sdwa_dest(f'asuint({expr})', dst_sel, unused, vector.get(dst) if unused == 'UNUSED_PRESERVE' else None)})"
+            vector[dst] = f"alu{i}"
+            lines.append(f"    precise float alu{i} = {expr};")
+        elif m := match(r"v_cvt_pkrtz_f16_f32_sdwa (v\d+), ([^,\s]+), ([^,\s]+) dst_sel:(BYTE_[0-3]|WORD_[01]|DWORD) dst_unused:(UNUSED_PAD|UNUSED_SEXT|UNUSED_PRESERVE) src0_sel:(BYTE_[0-3]|WORD_[01]|DWORD) src1_sel:(BYTE_[0-3]|WORD_[01]|DWORD)"):
+            # SDWA compressed-export pack: whole-dword binary32 float register sources with optional bit-31
+            # abs/neg modifiers and whole-dword destination, producing the same (lo, hi) compressed-export pair
+            # as v_cvt_pkrtz_f16_f32_e32 and v_cvt_pkrtz_f16_f32_dpp.
+            dst, src0, src1, dst_sel, unused, sel0, sel1 = m.groups()
+            if mask != "entry" or not 0 <= int(dst[1:]) <= 255:
+                raise ValueError("Invalid pack SDWA operation")
+            if dst in sample_dest:
+                raise ValueError("Write overlaps an outstanding sample")
+            if unused == "UNUSED_SEXT":
+                raise ValueError("UNUSED_SEXT is not lowered")
+            if dst_sel != "DWORD":
+                raise ValueError(f"v_cvt_pkrtz_f16_f32_sdwa requires dst_sel:DWORD, got {dst_sel}")
+            if sel0 != "DWORD" or sel1 != "DWORD":
+                raise ValueError("v_cvt_pkrtz_f16_f32_sdwa requires whole-dword sources")
+            pair_bits = []
+            for tok in (src0, src1):
+                if tok.startswith("sext("):
+                    raise ValueError(f"Unsupported float SDWA source modifier: {tok}")
+                sm = SDWA_F16_SRC.fullmatch(tok)
+                if not sm:
+                    raise ValueError(f"Unsupported float SDWA operand: {tok}")
+                neg, abs_fn, abs_bars, plain = sm.groups()
+                reg = abs_fn or abs_bars or plain
+                if not 0 <= int(reg[1:]) <= (255 if reg[0] == "v" else 105):
+                    raise ValueError(f"Register out of range: {reg}")
+                val = fp_operand(reg, scalar, vector, pending, sample_dest)
+                bits = f"asuint({val})"
+                if abs_fn or abs_bars:
+                    bits = f"({bits} & 0x7fffffffu)"
+                if neg:
+                    bits = f"({bits} ^ 0x80000000u)"
+                pair_bits.append(bits)
+            lines.append(f"    precise float alu{i}_lo = asfloat({pair_bits[0]});")
+            lines.append(f"    precise float alu{i}_hi = asfloat({pair_bits[1]});")
+            vector[dst] = (f"alu{i}_lo", f"alu{i}_hi")
         elif m := match(r"v_cvt_f16_f32_sdwa (.+)"):
             # SDWA binary32-to-binary16 conversion under the declared entry profile (half_denorm="preserve"
             # and HW_REG_MODE RNE). Takes a whole-dword register source (so f32 denormal mode never touches
