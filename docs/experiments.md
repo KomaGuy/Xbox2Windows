@@ -15097,3 +15097,21 @@ Building on #2443 (Slice 1), `X2W_D3D12_RELEASE_RETIRED=1` extends desktop objec
 ```powershell
 ctest --preset dev --no-tests=error -R '^startup_resource_(retire|budget)' -V
 ```
+
+## Binary16 SDWA arithmetic, rounding, scaling and conversions in pixel_aot
+
+[The pixel shader translator](../tools/pixel_aot.py) adds 14 contracted binary16 `SDWA` forms (counted in both `docs/coverage/gfx1013.tsv` and `docs/coverage/rdna2.tsv`):
+
+- VOP2 arithmetic (4): `v_add_f16_sdwa`, `v_sub_f16_sdwa`, `v_subrev_f16_sdwa`, `v_mul_f16_sdwa`
+- VOP2 scaling (1): `v_ldexp_f16_sdwa`
+- VOP1 rounding (4): `v_floor_f16_sdwa`, `v_ceil_f16_sdwa`, `v_trunc_f16_sdwa`, `v_rndne_f16_sdwa`
+- VOP1 conversions (5): `v_cvt_f16_f32_sdwa`, `v_cvt_f16_i16_sdwa`, `v_cvt_f16_u16_sdwa`, `v_cvt_i16_f16_sdwa`, `v_cvt_u16_f16_sdwa`
+
+All 14 require explicit `half_denorm="preserve"` and refuse `HALF_RTZ` (via `HW_REG_MODE`). Binary16 float sources accept VGPRs or SGPRs with `WORD_0`, `WORD_1`, or `DWORD` selection and optional bit-15 `abs`/`neg` modifiers (`half16` sources allow `WORD_0` only), under the static finite-proof contract; `v_cvt_f16_f32_sdwa` requires `src0_sel:DWORD` with optional bit-31 `abs`/`neg` modifiers. Integer sources (`v_ldexp_f16_sdwa` `src1`, `v_cvt_f16_{i16,u16}_sdwa` `src0`) accept `BYTE_0..3`, `WORD_0..1`, or `DWORD` with optional `sext()` and refuse float modifiers (`low16` sources allow `WORD_0`/`BYTE_0`/`BYTE_1` only; `u16` requires a static proof `< 65520`; `ldexp` requires a static exponent in `[-64, 64]`). Destination placement keeps the low-16-only contract (`("half16", alu)` / `("low16", alu)`) for `dst_sel:DWORD`, defines all 32 bits with `known_ssa_bits` tracking for `dst_sel:WORD_0` / `WORD_1` under `UNUSED_PAD` or `UNUSED_PRESERVE`, and refuses `UNUSED_SEXT`, `BYTE_*` destinations, `clamp`, and `omod`.
+
+```powershell
+python3 tests/pixel_aot_check.py
+ctest --preset dev --no-tests=error -R '^(pixel_aot_sdwa_f16_warp|pixel_aot_sdwa_f16_hardware|pixel_aot_binary)$' -V
+```
+
+Linux controls, `form_coverage_check.check_sdwa_f16_forms`, and Python reference/mutation checks ran locally; LLVM 15 `pixel_aot_binary` round-trips and Windows WARP/hardware D3D12 draws run in CI.
