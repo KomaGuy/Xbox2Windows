@@ -10566,6 +10566,10 @@ def check_dpp_f16_contract_controls():
          "binary16 result overflows: v_ldexp_f16_dpp"),
         (["v_mov_b32_e32 v20, 0x3c00", "v_mov_b32_e32 v21, 2"], f"v_ldexp_f16_dpp v24, v20, -v21 {identity}",
          "Source modifiers are not allowed on -v21"),
+        (["v_mov_b32_e32 v20, 0x3c00", "v_mov_b32_e32 v21, 2"], f"v_ldexp_f16_dpp v24, v20, |v21| {identity}",
+         "Source modifiers are not allowed on |v21|"),
+        (["v_mov_b32_e32 v20, 0x3c00", "v_mov_b32_e32 v21, 2"], f"v_ldexp_f16_dpp v24, v20, abs(v21) {identity}",
+         "Source modifiers are not allowed on abs(v21)"),
         (["v_mov_b32_e32 v20, 0x3c00", "v_mov_b32_e32 v21, 2"], "v_ldexp_f16_dpp v24, -v20, v21 dpp8:[1,2,3,0,5,6,7,4]",
          "Source modifiers are not allowed on -v20"),
         # v_cvt_f16_{i16,u16}_dpp: runtime u16 refused, 65520 overflow, float modifiers refused on DPP16, half16 refused.
