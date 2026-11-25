@@ -11392,7 +11392,7 @@ SDWA_CVT_ROWS = {
         # Row 1: s44=-6.0 (-s44=6, exp=3), s45=0.0, s46=0.25 (flr=0, exp=-1), s47=0.5 (-s47=-0.5 -> rpi=0).
         (0xc0c00000, 0x00000000, 0x3e800000, 0x3f000000),
         # Row 2: saturation & special values: s44=+Inf (-s44=-Inf -> INT_MIN, exp=0), s45=-Inf (|-Inf|->UINT_MAX),
-        # s46=NaN (flr=0, exp=0), s47=1.75 (-s47=-1.75 -> rpi=-2).
+        # s46=NaN (flr=0x7fffffff per #1772, exp=0), s47=1.75 (-s47=-1.75 -> rpi=-2).
         (0x7f800000, 0xff800000, 0x7fc00001, 0x3fe00000),
     ),
     "int_to_f32": (
@@ -11454,9 +11454,14 @@ def sdwa_cvt_reference(group, row):
         ((w >> off) & ((1 << wid) - 1)) | ((~((1 << wid) - 1) & 0xffffffff) if (sx and ((w >> (off + wid - 1)) & 1)) else 0)
     ) & 0xffffffff
     def cvt_i32(w, mode):
+        w &= 0xffffffff
+        if mode == "flr" and 0x80000000 < w < 0x80800000:
+            return 0xffffffff
         x = f32(w)
         if math.isnan(x):
-            return 0
+            # Per #1772, v_cvt_flr_i32_f32 and v_cvt_rpi_i32_f32 map NaN to 0x7fffffff + sign bit;
+            # v_cvt_i32_f32 maps NaN to 0.
+            return ((0x7fffffff + (w >> 31)) & 0xffffffff) if mode in ("flr", "rpi") else 0
         if x >= 2147483648.0:
             return 0x7fffffff
         if x <= -2147483648.0:
