@@ -2988,6 +2988,19 @@ SDWA_INT_OPERANDS = re.compile(
     rf"(v\d+), {SDWA_INT_SOURCE}(?:, {SDWA_INT_SOURCE})? dst_sel:(BYTE_[0-3]|WORD_[01]|DWORD)"
     r" dst_unused:(UNUSED_PAD|UNUSED_SEXT|UNUSED_PRESERVE) src0_sel:(BYTE_[0-3]|WORD_[01]|DWORD)"
     r"(?: src1_sel:(BYTE_[0-3]|WORD_[01]|DWORD))?")
+# Additional 32-bit integer SDWA forms (bit-scan/reverse, 24-bit multiplies, saturate-pack), kept
+# alongside SDWA_INT so existing 15-op SDWA_INT scanner/test assertions remain unchanged.
+SDWA_INT_EXTRA = {
+    op: INTEGER[op] for op in (
+        "bfrev_b32", "ffbl_b32", "ffbh_u32", "ffbh_i32", "sat_pk_u8_i16",
+        "mul_u32_u24", "mul_i32_i24", "mul_hi_u32_u24", "mul_hi_i32_i24",
+    )
+}
+SDWA_CO_CI_OPERANDS = re.compile(
+    rf"(v\d+), (vcc(?:_lo)?), {SDWA_INT_SOURCE}, {SDWA_INT_SOURCE}, (vcc(?:_lo)?)"
+    r" dst_sel:(BYTE_[0-3]|WORD_[01]|DWORD)"
+    r" dst_unused:(UNUSED_PAD|UNUSED_SEXT|UNUSED_PRESERVE)"
+    r" src0_sel:(BYTE_[0-3]|WORD_[01]|DWORD) src1_sel:(BYTE_[0-3]|WORD_[01]|DWORD)")
 SDWA_F16_SRC = re.compile(r"(-?)(?:abs\(([vs]\d+)\)|\|([vs]\d+)\||([vs]\d+))")
 SDWA_F16_UNARY_OPERANDS = re.compile(
     r"(v\d+), ([^,\s]+) dst_sel:(BYTE_[0-3]|WORD_[01]|DWORD)"
@@ -5330,6 +5343,72 @@ def lower(instructions, texture_sgpr, interp_sgpr, sampler, constant_descriptor=
             result = sdwa_dest(f"({template.format(*args)})", dst_sel, unused, vector.get(dst))
             vector[dst] = f"alu{i}"
             lines.append(f"    precise float alu{i} = asfloat({result});")
+        elif m := match(rf"v_({'|'.join(SDWA_INT_EXTRA)})_sdwa (.+)"):
+            # SDWA forms of bit-scan/reverse, 24-bit multiply, and saturate-pack integer ops.
+            op, rest = m.groups()
+            arity, template = SDWA_INT_EXTRA[op]
+            parsed = SDWA_INT_OPERANDS.fullmatch(rest)
+            if not parsed:
+                raise ValueError(f"Unsupported SDWA integer operands: v_{op}_sdwa {rest}")
+            dst, sext0, src0, close0, sext1, src1, close1, dst_sel, unused, sel0, sel1 = parsed.groups()
+            if bool(src1) != (arity == 2) or bool(sel1) != (arity == 2):
+                raise ValueError(f"v_{op}_sdwa takes {arity} source(s), each with its own selection")
+            if bool(sext0) != bool(close0) or bool(sext1) != bool(close1):
+                raise ValueError("Unbalanced sext() on an SDWA source")
+            if unused == "UNUSED_SEXT":
+                raise ValueError("UNUSED_SEXT is not lowered")
+            if mask != "entry" or not 0 <= int(dst[1:]) <= 255:
+                raise ValueError("Invalid integer operation")
+            if dst in sample_dest:
+                raise ValueError("Write overlaps an outstanding sample")
+            raw_args = [
+                sdwa_source(int_operand(token, scalar, vector, pending, sample_dest, signed=False), sel, bool(sext))
+                for token, sel, sext in ((src0, sel0, sext0), (src1, sel1, sext1))[:arity]
+            ]
+            arg_names = []
+            for k, expr in enumerate(raw_args):
+                lines.append(f"    uint sd{i}_{k} = {expr};")
+                arg_names.append(f"sd{i}_{k}")
+            if op in MUL24_HELPERS:
+                helpers.update(MUL24_HELPERS[op])
+            helpers.update(INTEGER_HELPERS.get(op, ()))
+            result = sdwa_dest(f"({template.format(*arg_names)})", dst_sel, unused, vector.get(dst))
+            vector[dst] = f"alu{i}"
+            lines.append(f"    precise float alu{i} = asfloat({result});")
+        elif m := match(r"v_(add|sub|subrev)_co_ci_u32_sdwa (.+)"):
+            # SDWA forms of carry-in 32-bit add/sub/subrev: extract/extend sources via SDWA, perform
+            # the 32-bit carry-in ALU op and update VCC with the 32-bit carry/borrow-out, then place
+            # the result according to dst_sel/dst_unused.
+            op, rest = m.groups()
+            parsed = SDWA_CO_CI_OPERANDS.fullmatch(rest)
+            if not parsed:
+                raise ValueError(f"Unsupported SDWA carry-in operands: v_{op}_co_ci_u32_sdwa {rest}")
+            dst, carry_out_tok, sext0, src0, close0, sext1, src1, close1, carry_in_tok, dst_sel, unused, sel0, sel1 = (
+                parsed.groups()
+            )
+            if bool(sext0) != bool(close0) or bool(sext1) != bool(close1):
+                raise ValueError("Unbalanced sext() on an SDWA source")
+            if unused == "UNUSED_SEXT":
+                raise ValueError("UNUSED_SEXT is not lowered")
+            if mask != "entry" or not 0 <= int(dst[1:]) <= 255 or dst in sample_dest or carry_out_tok != carry_in_tok:
+                raise ValueError("Invalid carry-in operation")
+            condition = scalar.get("vcc")
+            if ("vcc" in pending or not isinstance(condition, tuple)
+                    or condition[0] != "condition" or condition[2:] != (0, 1)):
+                raise ValueError("Carry mask is not a tracked condition")
+            a_expr = sdwa_source(int_operand(src0, scalar, vector, pending, sample_dest, signed=False), sel0, bool(sext0))
+            b_expr = sdwa_source(int_operand(src1, scalar, vector, pending, sample_dest, signed=False), sel1, bool(sext1))
+            partial, result_tmpl, carry_out_tmpl = CARRY_IN[op]
+            lines.append(f"    uint sa{i} = {a_expr};")
+            lines.append(f"    uint sb{i} = {b_expr};")
+            lines.append(f"    uint ci{i} = {condition[1]} ? 1u : 0u;")
+            lines.append(f"    uint cp{i} = {partial.format(f'sa{i}', f'sb{i}')};")
+            lines.append(f"    uint co{i} = {result_tmpl.format(p=f'cp{i}', c=f'ci{i}')};")
+            lines.append(f"    bool cmp{i} = {carry_out_tmpl.format(f'sa{i}', f'sb{i}', p=f'cp{i}', c=f'ci{i}', r=f'co{i}')};")
+            placed = sdwa_dest(f"co{i}", dst_sel, unused, vector.get(dst))
+            lines.append(f"    precise float alu{i} = asfloat({placed});")
+            scalar["vcc"] = ("condition", f"cmp{i}", 0, 1)
+            vector[dst] = f"alu{i}"
         elif m := match(r"v_cvt_f16_f32_sdwa (.+)"):
             # SDWA binary32-to-binary16 conversion under the declared entry profile (half_denorm="preserve"
             # and HW_REG_MODE RNE). Takes a whole-dword register source (so f32 denormal mode never touches

@@ -15244,3 +15244,21 @@ ctest --preset dev --no-tests=error -R '^(pixel_aot_sdwa_f16_warp|pixel_aot_sdwa
 ```
 
 Linux controls, `form_coverage_check.check_sdwa_f16_forms`, and Python reference/mutation checks ran locally; LLVM 15 `pixel_aot_binary` round-trips and Windows WARP/hardware D3D12 draws run in CI.
+
+## Extended 32-bit integer SDWA forms (bit-scan, sat_pk, mul24, carry-in) in pixel_aot
+
+[The pixel shader translator](../tools/pixel_aot.py) adds 12 integer `SDWA` forms (counted in both `docs/coverage/gfx1013.tsv` and `docs/coverage/rdna2.tsv`):
+
+- Bit-scan & reverse (4): `v_bfrev_b32_sdwa`, `v_ffbl_b32_sdwa`, `v_ffbh_u32_sdwa`, `v_ffbh_i32_sdwa`
+- Saturate-pack (1): `v_sat_pk_u8_i16_sdwa`
+- 24-bit integer multiply (4): `v_mul_u32_u24_sdwa`, `v_mul_i32_i24_sdwa`, `v_mul_hi_u32_u24_sdwa`, `v_mul_hi_i32_i24_sdwa`
+- Carry-in add/sub/subrev (3): `v_add_co_ci_u32_sdwa`, `v_sub_co_ci_u32_sdwa`, `v_subrev_co_ci_u32_sdwa`
+
+All 12 extract/sign-extend VGPR or SGPR sources with `BYTE_0..3`, `WORD_0..1`, or `DWORD` and optional `sext()`, place the result via `dst_sel` + `UNUSED_PAD`/`UNUSED_PRESERVE`, and refuse `UNUSED_SEXT`, float modifiers, inline constants, `clamp`, and `omod`. Carry-in forms read and update tracked `vcc`/`vcc_lo` conditions using the full 32-bit carry/borrow before destination placement.
+
+```powershell
+python3 tests/pixel_aot_check.py
+ctest --preset dev --no-tests=error -R '^(pixel_aot_sdwa_int_extra_warp|pixel_aot_sdwa_int_extra_hardware|pixel_aot_binary)$' -V
+```
+
+Linux controls, `form_coverage_check.check_sdwa_int_extra_forms`, and Python reference/mutation checks ran locally; LLVM 15 `pixel_aot_binary` round-trips and Windows WARP/hardware D3D12 draws run in CI.
