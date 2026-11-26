@@ -11782,18 +11782,35 @@ def check_f16_cvt_norm_controls():
             mutated = [line.replace(old, new) for line in prog]
             assert mutated != prog, (name, old)
             assert translate_f16(mutated) != hlsl, (name, old, new)
-    # Static DPP16/DPP8 permutation sensitivity: even though #839's static finite-proof contract keeps
-    # per-lane literals uniform, mutating quad_perm/dpp8 must change the emitted quad-swizzle HLSL.
-    for group, old, new in (
-        ("dpp16", "quad_perm:[1,0,3,2]", "quad_perm:[2,3,0,1]"),
-        ("dpp8", "dpp8:[1,2,3,0,5,6,7,4]", "dpp8:[3,0,1,2,7,4,5,6]"),
-    ):
-        prog = uncompressed_export(F16_CVT_NORM_PROGRAMS[group])
-        mutated = [line.replace(old, new) for line in prog]
-        assert mutated != prog, (group, old)
-        assert translate_f16(mutated) != translate_f16(prog), (group, old, new)
-    # Bare and _e32 spellings lower identically.
+    # Pin the exact DPP16/DPP8 permutation -> HLSL quad-intrinsic mapping on single-instruction
+    # cvt_norm programs (catches ignore, rotation, X<->Y swap, and lane-order transpositions).
     src = ["v_mov_b32_e32 v20, 0x3800"]
+    for op in ("v_cvt_norm_i16_f16_dpp", "v_cvt_norm_u16_f16_dpp"):
+        for dpp_spec, expected_counts, lane_order in (
+            ("quad_perm:[0,1,2,3] row_mask:0xf bank_mask:0xf", (0, 0, 0, 0), None),
+            ("quad_perm:[1,0,3,2] row_mask:0xf bank_mask:0xf", (1, 0, 0, 0), None),
+            ("quad_perm:[2,3,0,1] row_mask:0xf bank_mask:0xf", (0, 1, 0, 0), None),
+            ("quad_perm:[3,2,1,0] row_mask:0xf bank_mask:0xf", (0, 0, 1, 0), None),
+            ("quad_perm:[2,2,2,2] row_mask:0xf bank_mask:0xf", (0, 0, 0, 1), (2,)),
+            ("quad_perm:[0,2,1,3] row_mask:0xf bank_mask:0xf", (0, 0, 0, 4), (0, 2, 1, 3)),
+            ("dpp8:[1,2,3,0,5,6,7,4]", (0, 0, 0, 4), (1, 2, 3, 0)),
+        ):
+            hlsl = translate_f16(uncompressed_export([*src, f"{op} v24, v20 {dpp_spec}"]))
+            counts = tuple(
+                hlsl.count(name)
+                for name in ("QuadReadAcrossX(", "QuadReadAcrossY(", "QuadReadAcrossDiagonal(", "QuadReadLaneAt(")
+            )
+            assert counts == expected_counts, (op, dpp_spec, counts, expected_counts)
+            if lane_order is not None and len(lane_order) == 1:
+                assert f", {lane_order[0]});" in hlsl, (op, dpp_spec, hlsl)
+            elif lane_order is not None:
+                p0, p1, p2, p3 = lane_order
+                pat = (
+                    rf"\(\(\(dpp\d+_l{p0} & dpp\d+_even\) \| \(dpp\d+_l{p1} & ~dpp\d+_even\)\) & dpp\d+_top\) \| "
+                    rf"\(\(\(dpp\d+_l{p2} & dpp\d+_even\) \| \(dpp\d+_l{p3} & ~dpp\d+_even\)\) & ~dpp\d+_top\)"
+                )
+                assert re.search(pat, hlsl), (op, dpp_spec, lane_order, hlsl)
+    # Bare and _e32 spellings lower identically.
     for bare, e32 in (
         ("v_cvt_norm_i16_f16 v24, v20", "v_cvt_norm_i16_f16_e32 v24, v20"),
         ("v_cvt_norm_u16_f16 v24, v20", "v_cvt_norm_u16_f16_e32 v24, v20"),
