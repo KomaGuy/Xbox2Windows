@@ -355,11 +355,11 @@ SPIRV_TARGET_ARGS = ["-spirv", "-fspv-target-env=vulkan1.2", "-fvk-use-dx-layout
                      "-fvk-s-shift", "32", "0", "-fvk-u-shift", "48", "0"]
 
 
-def compile_shader(compiler, source, shader, *, listing=None, mode=F32_DENORM_MODE, ieee=True):
+def compile_shader(compiler, source, shader, *, listing=None, mode=F32_DENORM_MODE, ieee=True, unoptimized=False):
     """Run DXC on one translated shader under an explicit binary32 denormal mode."""
     # DXC accepts -denorm only at shader model 6.2 and above; ps_6_2 is the minimum target.
-    command = [compiler, *(["-Gis"] if ieee else []), "-denorm", mode,
-               "-T", "ps_6_2", "-E", "main", "-Fo", shader]
+    command = [compiler, *(["-Gis"] if ieee else []), *(["-Od"] if unoptimized else []),
+               "-denorm", mode, "-T", "ps_6_2", "-E", "main", "-Fo", shader]
     if listing is not None:
         command += ["-Fc", listing]
     if SPIRV_ARGS is not None:
@@ -11782,6 +11782,16 @@ def check_f16_cvt_norm_controls():
             mutated = [line.replace(old, new) for line in prog]
             assert mutated != prog, (name, old)
             assert translate_f16(mutated) != hlsl, (name, old, new)
+    # Static DPP16/DPP8 permutation sensitivity: even though #839's static finite-proof contract keeps
+    # per-lane literals uniform, mutating quad_perm/dpp8 must change the emitted quad-swizzle HLSL.
+    for group, old, new in (
+        ("dpp16", "quad_perm:[1,0,3,2]", "quad_perm:[2,3,0,1]"),
+        ("dpp8", "dpp8:[1,2,3,0,5,6,7,4]", "dpp8:[3,0,1,2,7,4,5,6]"),
+    ):
+        prog = uncompressed_export(F16_CVT_NORM_PROGRAMS[group])
+        mutated = [line.replace(old, new) for line in prog]
+        assert mutated != prog, (group, old)
+        assert translate_f16(mutated) != translate_f16(prog), (group, old, new)
     # Bare and _e32 spellings lower identically.
     src = ["v_mov_b32_e32 v20, 0x3800"]
     for bare, e32 in (
@@ -11849,8 +11859,9 @@ def check_f16_cvt_norm_draw(directory, compiler, renderer, backend):
         src_path.write_text(translate_f16(prog), encoding="ascii")
         compile_shader(compiler, src_path, cso_path)
         run_pixel_batch(renderer, backend, cso_path, [(pass_case, "pass")])
-        # Binary32 -denorm ftz must preserve binary16 subnormals and exact rounding.
-        compile_shader(compiler, src_path, cso_path, mode="ftz")
+        # Compile unoptimized (-Od) under -denorm ftz as well so DXC keeps the integer conversion
+        # arithmetic in DXIL instead of constant-folding the statically proven operands to immediates.
+        compile_shader(compiler, src_path, cso_path, mode="ftz", unoptimized=True)
         run_pixel_batch(renderer, backend, cso_path, [(pass_case, "pass")])
         for old, new in F16_CVT_NORM_MUTATIONS[name]:
             mutated = [line.replace(old, new) for line in prog]
